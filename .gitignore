@@ -10,6 +10,7 @@ bookroll_output_*/
 *.cookie
 *.session
 *.html
+create_cms_payload*.py
 private/
 output_*/
 *_capture_*/
