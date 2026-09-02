@@ -1,4 +1,4 @@
-# BookRoll PDF Automation
+# BookRoll-Automation
 
 A small, local-first tool for turning authorized BookRoll course materials into individual PDFs and an optional bookmarked collection PDF.
 
@@ -116,13 +116,15 @@ uv run bookroll combine `
 
 The merge keeps each source page size instead of resizing every page to one format. A collection can therefore contain mixed page sizes.
 
-## Local WebUI
+## Local WebUI (easy path)
 
 ```powershell
 uv run bookroll webui --host 127.0.0.1 --port 51837
 ```
 
-Open `http://127.0.0.1:51837/`. The checked-by-default dry-run lets you inspect the discovered material list and output paths before any request is made.
+Open `http://127.0.0.1:51837/`. For a beginner-friendly flow, click `run_webui.bat`; it creates the small `uv` environment on first launch and then starts the loopback-only server.
+
+In the form, enter your own base URL, the UTF-8 course-list HTML path, and a new output folder. Leave dry-run checked first. The UI shows the selected materials and planned paths without contacting the server. After checking the plan, enter a current cookie (or set `BOOKROLL_SESSION_COOKIE` before launching the server), disable dry-run, and run the authorized extraction. The base URL and cookie are used for that run only; they are not included in job output or logs.
 
 You can also run `run_webui.bat`. The WebUI binds to loopback by default and should not be exposed to a LAN or reverse proxy without adding a proper authentication and secret-handling layer.
 

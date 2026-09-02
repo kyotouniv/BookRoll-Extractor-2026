@@ -19,7 +19,7 @@ _jobs_lock = threading.RLock()
 
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -50,54 +50,57 @@ INDEX_HTML = r"""<!doctype html>
 <body>
 <main>
   <h1>BookRoll PDF automation</h1>
-  <p class="lead">dry-runを初期状態にした、ローカル専用の抽出WebUIです。</p>
+  <p class="lead">A local-first extraction UI. Dry-run is enabled by default.</p>
   <section class="card">
-    <div class="warning">Cookieは保存しません。実行時だけメモリ上で使います。環境変数 <code>BOOKROLL_SESSION_COOKIE</code> を推奨します。</div>
+    <div class="warning">Cookies are never stored. They are used only for the current run. Using the <code>BOOKROLL_SESSION_COOKIE</code> environment variable is recommended.</div>
     <form id="job-form">
+      <label for="base_url">Your BookRoll base URL</label>
+      <input id="base_url" name="base_url" type="text" required value="https://your-bookroll-host.example/bookroll">
+      <div class="hint">Enter your own authorized deployment URL. This value is used for this run and is not included in job output.</div>
       <div class="grid">
         <div>
-          <label for="home_html">保存済みhome HTML</label>
+          <label for="home_html">Saved course-list HTML</label>
           <input id="home_html" name="home_html" type="text" required placeholder="C:\\path\\home.html">
-          <div class="hint">BookRollの一覧画面をUTF-8で保存したHTMLです。</div>
+          <div class="hint">Save the authorized material-list page as UTF-8 HTML.</div>
         </div>
         <div>
-          <label for="batch_dir">出力先（新規または空のフォルダ）</label>
+          <label for="batch_dir">Output folder (new or empty)</label>
           <input id="batch_dir" name="batch_dir" type="text" required placeholder="C:\\private\\bookroll\\output_YYYYMMDD_01">
-          <div class="hint">既存の非空フォルダには書き込みません。</div>
+          <div class="hint">The extractor will not write into a non-empty folder.</div>
         </div>
       </div>
       <div class="grid">
         <div>
-          <label for="known_index">既知ページ数JSON（任意）</label>
+          <label for="known_index">Known page-count JSON (optional)</label>
           <input id="known_index" name="known_index" type="text" placeholder="既存のcollection_index.json">
         </div>
         <div>
-          <label for="select">資料番号（任意）</label>
+          <label for="select">Material selection (optional)</label>
           <input id="select" name="select" type="text" placeholder="例: 1,3-5（空欄=全部）">
         </div>
       </div>
-      <label for="cookie">Cookie（任意・非保存）</label>
+      <label for="cookie">Cookie (optional, not stored)</label>
       <input id="cookie" name="cookie" type="password" autocomplete="off" placeholder="環境変数を使う場合は空欄">
-      <div class="hint">入力値はレスポンス・ジョブ状態・ログへ返しません。</div>
+      <div class="hint">The value is not returned in responses, job state, or logs.</div>
       <div class="grid">
         <div>
-          <label for="delay">ページ間隔（秒）</label>
+          <label for="delay">Delay between pages (seconds)</label>
           <input id="delay" name="delay" type="number" min="0" step="0.05" value="0.15">
         </div>
         <div class="checks">
-          <label><input id="dry_run" name="dry_run" type="checkbox" checked> dry-run（ネットワーク・ファイル書込なし）</label>
-          <label><input id="combine" name="combine" type="checkbox"> 統合PDFも作る</label>
+          <label><input id="dry_run" name="dry_run" type="checkbox" checked> dry-run (no network or file writes)</label>
+          <label><input id="combine" name="combine" type="checkbox"> Create combined PDF</label>
         </div>
       </div>
       <div class="checks">
-        <button id="submit" type="submit">実行</button>
-        <button id="clear" class="secondary" type="button">表示を消去</button>
+        <button id="submit" type="submit">Run</button>
+        <button id="clear" class="secondary" type="button">Clear output</button>
       </div>
     </form>
   </section>
   <section class="card">
-    <div>状態: <span id="status" class="status">待機中</span></div>
-    <pre id="output">ここにdry-run計画または実行ログが表示されます。</pre>
+    <div>Status: <span id="status" class="status">Idle</span></div>
+    <pre id="output">The dry-run plan or extraction log will appear here.</pre>
   </section>
 </main>
 <script>
@@ -105,7 +108,7 @@ const form = document.getElementById('job-form');
 const output = document.getElementById('output');
 const status = document.getElementById('status');
 const submit = document.getElementById('submit');
-document.getElementById('clear').addEventListener('click', () => { output.textContent = ''; status.textContent = '待機中'; });
+document.getElementById('clear').addEventListener('click', () => { output.textContent = ''; status.textContent = 'Idle'; });
 function formBody() {
   const data = new URLSearchParams(new FormData(form));
   if (!document.getElementById('dry_run').checked) data.delete('dry_run');
@@ -124,7 +127,7 @@ async function poll(id) {
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   submit.disabled = true;
-  status.textContent = '送信中';
+  status.textContent = 'Submitting';
   output.textContent = '';
   try {
     const response = await fetch('/api/jobs', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:formBody(), cache:'no-store'});
@@ -132,7 +135,7 @@ form.addEventListener('submit', async (event) => {
     if (!response.ok) throw new Error(data.error || 'request failed');
     poll(data.id);
   } catch (error) {
-    status.textContent = 'エラー';
+    status.textContent = 'Error';
     output.textContent = error.message;
     submit.disabled = false;
   }
@@ -194,7 +197,7 @@ def _run_extract_job(job_id: str, plans, batch_dir: Path, form: dict[str, list[s
             plans,
             batch_dir,
             cookie=cookie,
-            base_url=os.environ.get("BOOKROLL_BASE_URL", DEFAULT_BASE_URL),
+            base_url=_value(form, "base_url") or os.environ.get("BOOKROLL_BASE_URL", DEFAULT_BASE_URL),
             delay=delay,
             progress=lambda message: _add_message(job_id, message),
             combine=_truthy(form, "combine"),
