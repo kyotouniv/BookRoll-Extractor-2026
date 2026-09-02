@@ -22,16 +22,22 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pypdf import PdfReader, PdfWriter
 
+from .protocol import (
+    LEGACY_ADAPTER,
+    ProtocolAdapter,
+    ProtocolDiscoveryError,
+    discover_adapter_from_bundle,
+    load_cached_adapter,
+    save_cached_adapter,
+    viewer_script_urls,
+)
+
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) "
     "Gecko/20100101 Firefox/151.0"
 )
 DEFAULT_BASE_URL = "https://example.invalid/bookroll"
-IMAGE_KEY_PREFIX = "uc5xi"
-IMAGE_QUERY_KEY = "ndw2j"
-IMAGE_KEY_SUFFIX = "ndw2j"
-PAYLOAD_RE = re.compile(r"Hah6lu3wie\((['\"])([^'\"]+)\1")
 CONTENTS_RE = re.compile(r"contents=([0-9a-f]{32,})", re.IGNORECASE)
 INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 ProgressCallback = Callable[[str], None]
@@ -245,7 +251,12 @@ def _read_response(opener, request: Request) -> tuple[bytes, Any]:
 
 
 class BookRollClient:
-    def __init__(self, cookie: str, base_url: str = DEFAULT_BASE_URL) -> None:
+    def __init__(
+        self,
+        cookie: str,
+        base_url: str = DEFAULT_BASE_URL,
+        protocol_cache_dir: Path | None = None,
+    ) -> None:
         if not cookie.strip():
             raise ValueError("a non-empty session cookie is required")
         self.cookie = cookie
@@ -256,6 +267,9 @@ class BookRollClient:
             raise ValueError("base_url must be an absolute http(s) URL")
         self.origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
         self.opener = build_opener(NoRedirect)
+        self.protocol_cache_dir = protocol_cache_dir
+        self.adapter = load_cached_adapter(self.base_url, protocol_cache_dir) or LEGACY_ADAPTER
+        self.adapter_source = "cache" if self.adapter is not LEGACY_ADAPTER else "compatibility fallback"
 
     def get_view_token(self, contents: str) -> tuple[str, str]:
         view_url = f"{self.base_url}/book/view?contents={contents}"
@@ -284,8 +298,7 @@ class BookRollClient:
         try:
             body, headers = _read_response(self.opener, request)
         except HTTPError as error:
-            detail = error.read(400).decode("utf-8", "replace")
-            raise RuntimeError(f"BookRoll API HTTP {error.code} for {url}: {detail[:300]}") from error
+            raise RuntimeError(f"BookRoll API HTTP {error.code} for {url}") from error
         next_token = headers.get("x-token") or token
         try:
             return json.loads(body.decode("utf-8")), next_token
@@ -298,19 +311,86 @@ class BookRollClient:
             raise RuntimeError("BookRoll metadata was not a JSON object")
         return metadata, token
 
-    def get_page(self, contents: str, page: int, token: str, referer: str) -> tuple[bytes, str]:
-        url = f"{self.api_base_url}/contents/{contents}/image/{page}?{IMAGE_QUERY_KEY}"
-        response, token = self.api_get(token, url, referer)
-        return decrypt_page(response), token
+    def _get_text(self, url: str, referer: str | None = None) -> str:
+        request = Request(url, headers=_request_headers(self.cookie, referer=referer, origin=self.origin), method="GET")
+        try:
+            body, _ = _read_response(self.opener, request)
+        except HTTPError as error:
+            raise ProtocolDiscoveryError(f"viewer asset returned HTTP {error.code}") from error
+        return body.decode("utf-8", "replace")
+
+    def _discover_protocol(self, referer: str) -> ProtocolAdapter:
+        viewer_html = self._get_text(referer, referer=self.base_url + "/")
+        scripts = viewer_script_urls(viewer_html)
+        if not scripts:
+            raise ProtocolDiscoveryError("viewer page did not list an application bundle")
+        for script in scripts:
+            bundle_url = urljoin(referer, script)
+            parsed = urlparse(bundle_url)
+            if parsed.scheme != urlparse(self.base_url).scheme or parsed.netloc != urlparse(self.base_url).netloc:
+                continue
+            adapter = discover_adapter_from_bundle(self._get_text(bundle_url, referer=referer))
+            save_cached_adapter(self.base_url, adapter, self.protocol_cache_dir)
+            return adapter
+        raise ProtocolDiscoveryError("no same-origin application bundle contained a supported image decoder")
+
+    def prepare_protocol(self, referer: str, progress: ProgressCallback | None = None) -> None:
+        if self.adapter_source == "cache":
+            if progress:
+                progress("protocol: using locally remembered adapter")
+            return
+        try:
+            self.adapter = self._discover_protocol(referer)
+            self.adapter_source = "discovered"
+            if progress:
+                progress("protocol: discovered current viewer adapter and saved a non-secret local cache")
+        except ProtocolDiscoveryError as error:
+            if progress:
+                progress(f"protocol: discovery unavailable; using compatibility fallback ({type(error).__name__})")
+
+    def refresh_protocol(self, referer: str, progress: ProgressCallback | None = None) -> bool:
+        try:
+            self.adapter = self._discover_protocol(referer)
+            self.adapter_source = "rediscovered"
+            if progress:
+                progress("protocol: adapter changed; refreshed from the current viewer bundle")
+            return True
+        except ProtocolDiscoveryError as error:
+            if progress:
+                progress(f"protocol: refresh unavailable ({type(error).__name__})")
+            return False
+
+    def get_page(
+        self,
+        contents: str,
+        page: int,
+        token: str,
+        referer: str,
+        progress: ProgressCallback | None = None,
+        allow_refresh: bool = True,
+    ) -> tuple[bytes, str]:
+        url = f"{self.api_base_url}/contents/{contents}/image/{page}?{self.adapter.image_query_key}"
+        try:
+            response, token = self.api_get(token, url, referer)
+        except RuntimeError:
+            if allow_refresh and self.refresh_protocol(referer, progress):
+                return self.get_page(contents, page, token, referer, progress, allow_refresh=False)
+            raise
+        try:
+            return decrypt_page(response, self.adapter), token
+        except (RuntimeError, ValueError):
+            if allow_refresh and self.refresh_protocol(referer, progress):
+                return decrypt_page(response, self.adapter), token
+            raise
 
 
-def decrypt_page(response: dict[str, Any]) -> bytes:
+def decrypt_page(response: dict[str, Any], adapter: ProtocolAdapter = LEGACY_ADAPTER) -> bytes:
     if not isinstance(response.get("data"), str) or not isinstance(response.get("iv"), str):
         raise RuntimeError("image response did not contain the expected data and iv fields")
-    match = PAYLOAD_RE.search(response["data"])
+    match = adapter.payload_pattern().search(response["data"])
     if not match:
         raise RuntimeError("image response did not contain the expected encrypted payload")
-    key = (IMAGE_KEY_PREFIX + response["iv"] + IMAGE_KEY_SUFFIX).encode("utf-8")
+    key = (adapter.key_prefix + response["iv"] + adapter.key_suffix).encode("utf-8")
     if len(key) != 16:
         raise RuntimeError(f"unexpected AES key length: {len(key)}")
     ciphertext = base64.b64decode(match.group(2), validate=True)
@@ -360,13 +440,15 @@ def extract_material(
     delay: float = 0.15,
     retries: int = 3,
     progress: ProgressCallback | None = None,
+    protocol_cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     report = plan.as_dict()
-    client = BookRollClient(cookie, base_url)
+    client = BookRollClient(cookie, base_url, protocol_cache_dir)
     plan.output_dir.mkdir(parents=True, exist_ok=True)
     pages_dir = plan.output_dir / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
     token, referer = client.get_view_token(plan.contents)
+    client.prepare_protocol(referer, progress)
     metadata, token = client.get_metadata(plan.contents, token, referer)
     contents = metadata.get("contents") or {}
     page_count = int(contents.get("pages") or 0)
@@ -387,7 +469,7 @@ def extract_material(
         last_error: Exception | None = None
         for attempt in range(retries):
             try:
-                payload, token = client.get_page(plan.contents, page_no, token, referer)
+                payload, token = client.get_page(plan.contents, page_no, token, referer, progress)
                 page_formats.add(_payload_to_pdf(payload, page_path))
                 page_paths.append(page_path)
                 break
@@ -410,7 +492,7 @@ def extract_material(
         "metadata_pages": page_count,
         "merged_pages": merged_pages,
         "page_formats": sorted(page_formats),
-        "image_endpoint": f"{client.api_base_url}/contents/{{contents}}/image/{{page}}?{IMAGE_QUERY_KEY}",
+        "image_endpoint": f"{client.api_base_url}/contents/{{contents}}/image/{{page}}?{client.adapter.image_query_key}",
         "output_pdf": str(plan.output_pdf),
         "sha256": sha256(plan.output_pdf),
     }
@@ -439,6 +521,7 @@ def extract_collection(
     retries: int = 3,
     progress: ProgressCallback | None = None,
     combine: bool = False,
+    protocol_cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     if batch_dir.exists() and any(batch_dir.iterdir()):
         raise FileExistsError(f"refusing to use a non-empty batch directory: {batch_dir}")
@@ -451,7 +534,7 @@ def extract_collection(
         if progress:
             progress(f"[{plan.number:02d}] {plan.title}")
         try:
-            result = extract_material(plan, cookie, base_url, delay, retries, progress)
+            result = extract_material(plan, cookie, base_url, delay, retries, progress, protocol_cache_dir)
         except Exception as error:
             result = plan.as_dict()
             result.update({"status": "failed", "error": f"{type(error).__name__}: {error}"})

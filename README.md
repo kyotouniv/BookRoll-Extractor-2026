@@ -91,6 +91,22 @@ Remove-Item Env:BOOKROLL_SESSION_COOKIE
 
 The extractor refuses to use a non-empty batch directory, existing page PDFs, or an existing combined PDF. Use a new timestamped output directory for a new run.
 
+## Remembered protocol adapter
+
+Viewer bundles can change their wrapper function name, image query marker, or AES key fragments. On the first authorized extraction, the tool reads the current viewer HTML and its same-origin application bundle as text, then statically extracts the narrow `getBookImage` decoder shape. It never executes JavaScript.
+
+The learned adapter is saved locally for the next run. Its filename is a SHA-256 fingerprint of the base URL; its JSON contains only the non-secret protocol shape. It does not contain the base URL itself, course identifiers, cookies, bearer tokens, response bodies, or decoded pages. The default location is `%LOCALAPPDATA%\BookRoll-Automation\protocol-cache` on Windows.
+
+If a remembered adapter no longer works because the endpoint rejects it or page decryption fails, the tool automatically rereads the current viewer bundle, updates the local cache with a backup of the prior cache file, and retries the affected page once. To choose a different local cache location, pass `--protocol-cache-dir`:
+
+```powershell
+uv run bookroll extract `
+  --home-html C:\private\bookroll\home.html `
+  --batch-dir C:\private\bookroll\output_20260902_01 `
+  --base-url $env:BOOKROLL_BASE_URL `
+  --protocol-cache-dir C:\private\bookroll\protocol-cache
+```
+
 Typical output:
 
 ```text
@@ -130,17 +146,17 @@ You can also run `run_webui.bat`. The WebUI binds to loopback by default and sho
 
 ## Protocol notes
 
-The adapter follows this sequence:
+The adapter follows this sequence after discovering (or safely reusing) the current viewer protocol:
 
 1. `GET /bookroll/book/view?contents=<id>` and capture the redirect location.
 2. `GET /bookroll/v1/contents/<id>` with the short-lived bearer token.
-3. `GET /bookroll/v1/contents/<id>/image/<page>?ndw2j`.
+3. `GET /bookroll/v1/contents/<id>/image/<page>?<viewer-discovered-marker>`.
 4. Parse `data` and `iv` from the JSON response.
-5. Extract the argument inside the expected `Hah6lu3wie(...)` wrapper.
-6. Build the AES key as `uc5xi + iv + ndw2j`, decrypt AES-128-ECB, remove PKCS#7 padding, and decode the inner Base64.
+5. Extract the argument inside the wrapper observed in the current viewer bundle.
+6. Build the AES key from the viewer-discovered prefix, `iv`, and suffix; decrypt AES-128-ECB, remove PKCS#7 padding, and decode the inner Base64.
 7. Accept only recognized PDF or image signatures before writing output.
 
-The code intentionally does not use `eval`, execute Vue bundles, or treat an arbitrary response as code. When the response format changes, it fails closed so that an unexpected payload is not silently saved.
+The code intentionally does not use `eval`, execute Vue bundles, or treat an arbitrary response as code. When the response format changes beyond the supported static shape, it fails closed so that an unexpected payload is not silently saved.
 
 ## Verification
 

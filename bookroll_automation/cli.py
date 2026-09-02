@@ -69,6 +69,7 @@ def _extract(args: argparse.Namespace) -> int:
         retries=args.retries,
         progress=progress,
         combine=args.combine,
+        protocol_cache_dir=args.protocol_cache_dir,
     )
     print(json.dumps(result["summary"], ensure_ascii=False, indent=2))
     return 0 if result["summary"]["failed"] == 0 else 1
@@ -104,6 +105,11 @@ def _build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--cookie-env", default="BOOKROLL_SESSION_COOKIE", help="environment variable name")
     extract.add_argument("--delay", type=float, default=0.15, help="seconds between image requests")
     extract.add_argument("--retries", type=int, default=3)
+    extract.add_argument(
+        "--protocol-cache-dir",
+        type=Path,
+        help="optional local directory for non-secret remembered viewer protocol data",
+    )
     extract.add_argument("--combine", action="store_true", help="also create batch/output/pdf/bookroll_all.pdf")
     extract.add_argument("--dry-run", action="store_true", help="plan only; never reads cookie or contacts network")
     extract.add_argument("--json", action="store_true", help="print dry-run plan as JSON")
