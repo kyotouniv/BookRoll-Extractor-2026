@@ -1,0 +1,21 @@
+[project]
+name = "bookroll-automation"
+version = "0.1.0"
+description = "Authorized BookRoll material extraction, PDF merge, and local WebUI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=43",
+  "pillow>=10",
+  "pypdf>=5",
+]
+
+[project.scripts]
+bookroll = "bookroll_automation.cli:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["bookroll_automation*"]

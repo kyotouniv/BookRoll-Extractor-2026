@@ -1,0 +1,17 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.log
+*.bak-*
+*.bak
+bookroll_output_*/
+*.cookie
+*.session
+*.html
+private/
+output_*/
+*_capture_*/
+.env
+.env.*
