@@ -1,4 +1,4 @@
-# BookRoll-Automation
+# BookRoll-Automation-2026
 
 A small, local-first tool for turning authorized BookRoll course materials into individual PDFs and an optional bookmarked collection PDF.
 
