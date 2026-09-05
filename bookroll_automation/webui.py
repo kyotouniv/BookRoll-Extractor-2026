@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import html
+import ipaddress
 import json
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -108,6 +111,7 @@ const form = document.getElementById('job-form');
 const output = document.getElementById('output');
 const status = document.getElementById('status');
 const submit = document.getElementById('submit');
+const csrfToken = '__BOOKROLL_CSRF_TOKEN__';
 document.getElementById('clear').addEventListener('click', () => { output.textContent = ''; status.textContent = 'Idle'; });
 function formBody() {
   const data = new URLSearchParams(new FormData(form));
@@ -130,7 +134,7 @@ form.addEventListener('submit', async (event) => {
   status.textContent = 'Submitting';
   output.textContent = '';
   try {
-    const response = await fetch('/api/jobs', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:formBody(), cache:'no-store'});
+    const response = await fetch('/api/jobs', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded', 'X-BookRoll-CSRF':csrfToken}, body:formBody(), cache:'no-store'});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'request failed');
     poll(data.id);
@@ -229,7 +233,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_html(self) -> None:
-        body = INDEX_HTML.encode("utf-8")
+        token = html.escape(self.server.csrf_token, quote=True)
+        body = INDEX_HTML.replace("__BOOKROLL_CSRF_TOKEN__", token).encode("utf-8")
         self.send_response(200)
         self._headers("text/html; charset=utf-8", len(body))
         self.end_headers()
@@ -244,6 +249,11 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("request body is too large")
         raw = self.rfile.read(length)
         return parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+
+    def _is_valid_local_request(self) -> bool:
+        origin = self.headers.get("Origin", "")
+        token = self.headers.get("X-BookRoll-CSRF", "")
+        return origin == self.server.expected_origin and secrets.compare_digest(token, self.server.csrf_token)
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -263,6 +273,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not self._is_valid_local_request():
+            self._send_json({"error": "local origin or CSRF token was invalid"}, 403)
+            return
         try:
             form = self._read_form()
             plans, payload = _build_request_plan(form)
@@ -304,10 +317,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"{type(error).__name__}: {error}"}, 400)
 
 
+def _is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _origin_for(host: str, port: int) -> str:
+    return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
+
+
+class BookRollHTTPServer(ThreadingHTTPServer):
+    def __init__(self, server_address, handler_class, bind_host: str) -> None:
+        super().__init__(server_address, handler_class)
+        self.csrf_token = secrets.token_urlsafe(32)
+        self.expected_origin = _origin_for(bind_host, self.server_address[1])
+
+
 def run_server(host: str = "127.0.0.1", port: int = 51837) -> None:
     if not (10000 <= port <= 99999):
         raise ValueError("port must be a five-digit number")
-    server = ThreadingHTTPServer((host, port), Handler)
+    if not _is_loopback_host(host):
+        raise ValueError("WebUI may bind only to localhost or a loopback IP address")
+    server = BookRollHTTPServer((host, port), Handler, host)
     print(f"BookRoll WebUI: http://{host}:{port}/", flush=True)
     try:
         server.serve_forever()

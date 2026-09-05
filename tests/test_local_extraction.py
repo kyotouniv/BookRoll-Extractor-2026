@@ -60,7 +60,13 @@ class FakeBookRollHandler(BaseHTTPRequestHandler):
             self.send_header("Location", f"/bookroll/book/view/{self.token}")
             self.end_headers()
         elif path == f"/bookroll/book/view/{self.token}":
-            self._send(b'<script src="/bookroll/vue/js/app.test.js"></script>', content_type="text/html")
+            self._send(
+                b'<script src="/bookroll/vue/js/app.old.js"></script><script src="/bookroll/vue/js/app.test.js"></script>',
+                content_type="text/html",
+            )
+        elif path == "/bookroll/vue/js/app.old.js":
+            type(self).protocol_requests += 1
+            self._send(b"console.log('no image decoder here')", content_type="application/javascript")
         elif path == "/bookroll/vue/js/app.test.js":
             type(self).protocol_requests += 1
             self._send(

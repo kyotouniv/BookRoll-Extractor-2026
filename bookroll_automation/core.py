@@ -250,6 +250,15 @@ def _read_response(opener, request: Request) -> tuple[bytes, Any]:
         return body, response.headers
 
 
+def _api_resource_label(url: str) -> str:
+    path = urlparse(url).path
+    if "/image/" in path:
+        return "page image"
+    if "/contents/" in path:
+        return "metadata"
+    return "endpoint"
+
+
 class BookRollClient:
     def __init__(
         self,
@@ -284,7 +293,11 @@ class BookRollClient:
             if not location:
                 raise RuntimeError("BookRoll view redirect had no Location header")
         location = urljoin(view_url, location)
-        token = urlparse(location).path.rstrip("/").split("/")[-1]
+        redirect = urlparse(location)
+        base = urlparse(self.base_url)
+        if redirect.scheme != base.scheme or redirect.netloc != base.netloc:
+            raise RuntimeError("BookRoll view redirect left the configured origin")
+        token = redirect.path.rstrip("/").split("/")[-1]
         if len(token) < 100:
             raise RuntimeError("BookRoll view redirect token was unexpectedly short")
         return token, location
@@ -298,12 +311,12 @@ class BookRollClient:
         try:
             body, headers = _read_response(self.opener, request)
         except HTTPError as error:
-            raise RuntimeError(f"BookRoll API HTTP {error.code} for {url}") from error
+            raise RuntimeError(f"BookRoll {_api_resource_label(url)} API HTTP {error.code}") from error
         next_token = headers.get("x-token") or token
         try:
             return json.loads(body.decode("utf-8")), next_token
         except json.JSONDecodeError as error:
-            raise RuntimeError(f"BookRoll API returned invalid JSON for {url}") from error
+            raise RuntimeError(f"BookRoll {_api_resource_label(url)} API returned invalid JSON") from error
 
     def get_metadata(self, contents: str, token: str, referer: str) -> tuple[dict[str, Any], str]:
         metadata, token = self.api_get(token, f"{self.api_base_url}/contents/{contents}", referer)
@@ -329,7 +342,10 @@ class BookRollClient:
             parsed = urlparse(bundle_url)
             if parsed.scheme != urlparse(self.base_url).scheme or parsed.netloc != urlparse(self.base_url).netloc:
                 continue
-            adapter = discover_adapter_from_bundle(self._get_text(bundle_url, referer=referer))
+            try:
+                adapter = discover_adapter_from_bundle(self._get_text(bundle_url, referer=referer))
+            except ProtocolDiscoveryError:
+                continue
             save_cached_adapter(self.base_url, adapter, self.protocol_cache_dir)
             return adapter
         raise ProtocolDiscoveryError("no same-origin application bundle contained a supported image decoder")
@@ -492,7 +508,7 @@ def extract_material(
         "metadata_pages": page_count,
         "merged_pages": merged_pages,
         "page_formats": sorted(page_formats),
-        "image_endpoint": f"{client.api_base_url}/contents/{{contents}}/image/{{page}}?{client.adapter.image_query_key}",
+        "image_endpoint_path": f"/v1/contents/{{contents}}/image/{{page}}?{client.adapter.image_query_key}",
         "output_pdf": str(plan.output_pdf),
         "sha256": sha256(plan.output_pdf),
     }
@@ -554,7 +570,6 @@ def extract_collection(
     index = {
         "items": results,
         "summary": summary,
-        "base_url": base_url,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     index_path = batch_dir / "collection_index.json"
@@ -580,6 +595,9 @@ def combine_collection(index_path: Path, output_path: Path) -> dict[str, Any]:
         raise ValueError(f"collection index has no items: {index_path}")
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite existing combined PDF: {output_path}")
+    manifest_path = index_path.parent / "combined_manifest.json"
+    if manifest_path.exists():
+        raise FileExistsError(f"refusing to overwrite existing combined manifest: {manifest_path}")
     writer = PdfWriter()
     writer.add_metadata({"/Title": "BookRoll materials", "/Creator": "BookRoll automation"})
     sections: list[dict[str, Any]] = []
@@ -615,8 +633,5 @@ def combine_collection(index_path: Path, output_path: Path) -> dict[str, Any]:
         "bytes": output_path.stat().st_size,
         "sha256": sha256(output_path),
     }
-    manifest_path = output_path.parent.parent.parent / "combined_manifest.json"
-    if manifest_path.exists():
-        raise FileExistsError(f"refusing to overwrite existing combined manifest: {manifest_path}")
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest

@@ -95,7 +95,7 @@ The extractor refuses to use a non-empty batch directory, existing page PDFs, or
 
 Viewer bundles can change their wrapper function name, image query marker, or AES key fragments. On the first authorized extraction, the tool reads the current viewer HTML and its same-origin application bundle as text, then statically extracts the narrow `getBookImage` decoder shape. It never executes JavaScript.
 
-The learned adapter is saved locally for the next run. Its filename is a SHA-256 fingerprint of the base URL; its JSON contains only the non-secret protocol shape. It does not contain the base URL itself, course identifiers, cookies, bearer tokens, response bodies, or decoded pages. The default location is `%LOCALAPPDATA%\BookRoll-Automation\protocol-cache` on Windows.
+The learned adapter is saved locally for the next run. Its filename is a SHA-256 fingerprint of the base URL; its JSON contains only the non-secret protocol shape. It does not contain the base URL itself, course identifiers, cookies, bearer tokens, response bodies, or decoded pages. A hash avoids plaintext storage but is not a substitute for secrecy when an attacker can guess the deployment URL. The default location is `%LOCALAPPDATA%\BookRoll-Automation\protocol-cache` on Windows.
 
 If a remembered adapter no longer works because the endpoint rejects it or page decryption fails, the tool automatically rereads the current viewer bundle, updates the local cache with a backup of the prior cache file, and retries the affected page once. To choose a different local cache location, pass `--protocol-cache-dir`:
 
@@ -140,15 +140,15 @@ uv run bookroll webui --host 127.0.0.1 --port 51837
 
 Open `http://127.0.0.1:51837/`. For a beginner-friendly flow, click `run_webui.bat`; it creates the small `uv` environment on first launch and then starts the loopback-only server.
 
-In the form, enter your own base URL, the UTF-8 course-list HTML path, and a new output folder. Leave dry-run checked first. The UI shows the selected materials and planned paths without contacting the server. After checking the plan, enter a current cookie (or set `BOOKROLL_SESSION_COOKIE` before launching the server), disable dry-run, and run the authorized extraction. The base URL and cookie are used for that run only; they are not included in job output or logs.
+In the form, enter your own base URL, the UTF-8 course-list HTML path, and a new output folder. Leave dry-run checked first. The UI shows the selected materials and planned paths without contacting the server. After checking the plan, enter a current cookie (or set `BOOKROLL_SESSION_COOKIE` before launching the server), disable dry-run, and run the authorized extraction. The base URL and cookie are not returned by WebUI job status or messages. Extraction artifacts still contain private material titles, identifiers, and local paths, so keep the output directory private and ignored.
 
-You can also run `run_webui.bat`. The WebUI binds to loopback by default and should not be exposed to a LAN or reverse proxy without adding a proper authentication and secret-handling layer.
+You can also run `run_webui.bat`. The server refuses a non-loopback bind and requires a startup-generated CSRF token plus the matching loopback Origin for POST requests. Do not expose it through a LAN or reverse proxy.
 
 ## Protocol notes
 
 The adapter follows this sequence after discovering (or safely reusing) the current viewer protocol:
 
-1. `GET /bookroll/book/view?contents=<id>` and capture the redirect location.
+1. `GET /bookroll/book/view?contents=<id>` and capture the redirect location. A redirect that leaves the configured origin is rejected before a follow-up request can carry the cookie.
 2. `GET /bookroll/v1/contents/<id>` with the short-lived bearer token.
 3. `GET /bookroll/v1/contents/<id>/image/<page>?<viewer-discovered-marker>`.
 4. Parse `data` and `iv` from the JSON response.
@@ -167,7 +167,7 @@ $env:UV_CACHE_DIR = Join-Path (Get-Location) '.uv-cache'
 uv run python -m unittest discover -s tests -v
 ```
 
-The test suite covers material-list parsing, AES payload decryption, PDF merging, and a local HTTP protocol fixture. It does not prove that a real account can access a particular deployment; that depends on your current cookie, permissions, and server state.
+The test suite covers material-list parsing, AES payload decryption, PDF merging, redirect-origin rejection, local WebUI CSRF protection, and a local HTTP protocol fixture. It does not prove that a real account can access a particular deployment; that depends on your current cookie, permissions, and server state.
 
 ## Privacy and publication checklist
 
@@ -176,6 +176,7 @@ Before publishing or sharing a run:
 - Remove saved course HTML and downloaded PDFs from the Git working tree.
 - Check for cookies, bearer tokens, private material IDs, hostnames, institution names, and screenshots.
 - Keep the base URL and cookie in environment variables or a local secret store.
+- Treat `extraction_manifest.json`, `collection_index.json`, `progress.jsonl`, `combined_manifest.json`, and generated PDFs as private run artifacts; do not publish them.
 - Use a new output directory rather than overwriting an earlier run.
 - Confirm that the documents may legally be saved and redistributed before sharing them.
 

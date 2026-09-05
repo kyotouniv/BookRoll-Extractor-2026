@@ -33,11 +33,27 @@ class CombineTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            output = root / "output" / "pdf" / "all.pdf"
+            output = root / "all.pdf"
             manifest = combine_collection(index, output)
             self.assertEqual(manifest["total_pages"], 2)
             self.assertEqual(len(PdfReader(str(output)).pages), 2)
             self.assertTrue((root / "combined_manifest.json").is_file())
+
+    def test_existing_manifest_refuses_before_writing_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=100, height=100)
+            with source.open("wb") as stream:
+                writer.write(stream)
+            index = root / "collection_index.json"
+            index.write_text(json.dumps({"items": [{"title": "Source", "output_pdf": str(source)}]}), encoding="utf-8")
+            (root / "combined_manifest.json").write_text("{}", encoding="utf-8")
+            output = root / "arbitrary" / "all.pdf"
+            with self.assertRaises(FileExistsError):
+                combine_collection(index, output)
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
